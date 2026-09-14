@@ -8,7 +8,7 @@
 
 ## ★ 通义千问 API 配置（必看）
 
-**配置文件路径：`backend/config/ai.config.js`**
+**配置文件路径：项目根目录的 `.env` 文件**（`backend/config/ai.config.js` 会自动读取它）
 
 ### 第一步：获取 API Key
 
@@ -16,20 +16,19 @@
 2. 登录阿里云账号，点击「创建 API Key」
 3. 复制生成的 Key（格式类似 `sk-xxxxxxxx`）
 
-### 第二步：填入配置文件
+### 第二步：在 .env 中填入 API Key
 
-用编辑器打开 `backend/config/ai.config.js`，只需修改 **`apiKey`** 这一行：
+在项目根目录创建（或编辑）`.env` 文件，写入你的 Key：
 
-```javascript
-module.exports = {
-  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',  // 已配好，不用改
-  apiKey: 'sk-你的千问API密钥',   // ← 在这里粘贴你的 Key
-  model: 'qwen-plus',              // 文字对话模型
-  visionModel: 'qwen-vl-plus',     // 识图模型
-  enableSearch: true,              // 联网搜索菜谱（千问内置）
-  // ...其余保持默认即可
-};
+```ini
+DASHSCOPE_API_KEY=sk-你的千问API密钥
 ```
+
+> 可选配置（有默认值，一般不用改）：
+>
+> ```ini
+> DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+> ```
 
 ### 第三步：确认模型开通
 
@@ -41,7 +40,7 @@ module.exports = {
 | 图片识食 | `visionModel` | `qwen-vl-plus` |
 | 联网搜菜谱 | `enableSearch: true` | 随文字模型启用 |
 
-> 业务代码**不会硬编码**任何 API 信息，全部从 `ai.config.js` 读取。
+> 业务代码**不会硬编码**任何 API 信息，全部从项目根目录的 `.env` 文件读取。
 
 ---
 
@@ -115,7 +114,7 @@ npm run dev
 ```
 mycooker1/
 ├── backend/
-│   ├── config/ai.config.js        ★ 千问 API 配置文件
+│   ├── config/ai.config.js        从 .env 读取 API 配置（一般不用改）
 │   ├── routes/
 │   │   ├── chat.js                文字对话（含记忆）
 │   │   ├── history.js             对话历史
@@ -154,7 +153,7 @@ mycooker1/
 ## 常见问题
 
 **Q: 提示「AI API 配置未完成」？**
-A: 编辑 `backend/config/ai.config.js`，填写 `apiKey` 字段。
+A: 在项目根目录创建 `.env` 文件，填入 `DASHSCOPE_API_KEY=你的Key`。
 
 **Q: 识图失败？**
 A: 确认 DashScope 已开通 `qwen-vl-plus` 视觉模型，且图片清晰、包含可见食材。
