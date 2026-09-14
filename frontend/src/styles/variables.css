@@ -1,0 +1,53 @@
+:root {
+  /* 主色调 - 清新厨房绿 */
+  --color-primary: #4a9d6f;
+  --color-primary-light: #6bb88a;
+  --color-primary-dark: #3a7d57;
+  --color-primary-bg: rgba(74, 157, 111, 0.08);
+
+  /* 辅助色 - 暖橙 */
+  --color-accent: #e8913a;
+  --color-accent-light: #f5b06a;
+  --color-accent-bg: rgba(232, 145, 58, 0.1);
+
+  /* 中性色 */
+  --color-bg: #f7f9f6;
+  --color-bg-card: #ffffff;
+  --color-bg-sidebar: #f0f4f1;
+  --color-text: #2c3e35;
+  --color-text-secondary: #6b7c72;
+  --color-text-muted: #9aab9f;
+  --color-border: #e2ebe4;
+  --color-border-light: #eef3ef;
+
+  /* 消息气泡 */
+  --color-user-bubble: linear-gradient(135deg, #4a9d6f 0%, #3d8a5f 100%);
+  --color-ai-bubble: #ffffff;
+  --color-ai-bubble-border: #e2ebe4;
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 8px rgba(44, 62, 53, 0.06);
+  --shadow-md: 0 4px 20px rgba(44, 62, 53, 0.08);
+  --shadow-lg: 0 8px 40px rgba(44, 62, 53, 0.12);
+  --shadow-card: 0 2px 12px rgba(74, 157, 111, 0.08);
+
+  /* 圆角 */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  /* 字体 */
+  --font-serif: 'Noto Serif SC', 'Songti SC', serif;
+  --font-sans: 'DM Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* 过渡 */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+  --transition-slow: 0.4s ease;
+
+  /* 布局 */
+  --header-height: 64px;
+  --sidebar-width: 280px;
+}
