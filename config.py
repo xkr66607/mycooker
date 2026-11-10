@@ -43,10 +43,6 @@ EMBEDDING_URL = os.getenv(
 # 单次最多多少条文本送 embed（官方限制 25，留点余量）
 EMBEDDING_BATCH = int(os.getenv("MYCOOKER_EMBEDDING_BATCH", "10"))
 
-# ---------------------------------------------------------------- 联网检索（可选兜底）
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
-ENABLE_WEB_FALLBACK = os.getenv("MYCOOKER_WEB_FALLBACK", "1") == "1"
-
 # ---------------------------------------------------------------- 切分
 CHUNK_SIZE = int(os.getenv("MYCOOKER_CHUNK_SIZE", "350"))
 CHUNK_OVERLAP = int(os.getenv("MYCOOKER_CHUNK_OVERLAP", "60"))
