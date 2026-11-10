@@ -105,8 +105,6 @@ async def health():
 STATIC_DIR = ROOT / "static"
 STATIC_DIR.mkdir(exist_ok=True)
 
-_OLD_STATIC = ROOT / "static_old"
-
 
 @app.get("/", include_in_schema=False)
 async def index():
