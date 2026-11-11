@@ -1,8 +1,7 @@
 """
-回答两个疑问：
-  疑问1：既然 similarity 就是 cos，为什么还要算 1 - distance？
-  疑问2：归一化向量 / 点积等于余弦，到底什么意思？
-全部用真实数据，不用任何假设。
+回答：既然 cos 更好用，为什么不直接算 cos，非要绕 distance 一圈？
+
+两条路都走一遍，看结果是不是同一个数，以及为什么不能选第二条。
 """
 import sys
 
@@ -15,148 +14,119 @@ from rag import embeddings, store  # noqa: E402
 Q = "糖醋汁的比例是多少"
 
 
-def line(ch="=", n=76):
+def line(ch="=", n=74):
     print(ch * n)
 
 
-# ============================================================
-line()
-print("疑问 1 之一：Chroma 到底给你返回什么？我们把原始结果挖出来看")
-line()
-qv = embeddings.embed_query(Q)
+qv = np.array(embeddings.embed_query(Q), dtype=float)
 col = store._col()
 
-raw = col.query(
-    query_embeddings=[qv],
-    n_results=5,
-    include=["documents", "metadatas", "distances"],
-)
-dists = raw.get("distances") or [[]]
-docs = raw.get("documents") or [[]]
-metas = raw.get("metadatas") or [[]]
+# ============================================================
+line()
+print("路线 A：问 Chroma 要结果（它给你 distance，你自己翻成 cos）")
+line()
 
-d = dists[0]
-print(f"\n  问句：{Q}\n")
-print(f"  {'#':<3}{'Chroma 返回的 distances':>26}{'对应文档片段':>10}")
-print("  " + "-" * 70)
-for i, dist in enumerate(d):
-    label = (metas[0][i] or {}).get("label", "?") if metas[0] else "?"
-    snippet = (docs[0][i] or "")[:34].replace("\n", " ")
-    print(f"  {i+1:<3}{dist:>26.6f}   {label} | {snippet}")
+res = col.query(query_embeddings=[qv], n_results=5,
+                include=["documents", "metadatas", "distances"])
+dists = res["distances"][0]
+metas = res["metadatas"][0]
 
-print()
-print("  >>> 注意：Chroma 根本没给你 cos，它给的是 distances，而且是【越小越像】。")
-print("      最大的问题：如果你拿这个数当相似度直接排序，会把最不像的排到最前。")
-
-# ------------------------------------------------------------
-line("-")
-print("疑问 1 之二：如果不转换，直接用 distance 排序，会发生什么")
-line("-")
-
-wrong = sorted(range(len(d)), key=lambda i: d[i], reverse=True)   # 错的写法
-right = sorted(range(len(d)), key=lambda i: 1 - d[i], reverse=True)  # 对的写法
-
-print("\n  错误写法  out.sort(key=lambda x: x['distance'], reverse=True)")
-for rank, i in enumerate(wrong, 1):
-    label = (metas[0][i] or {}).get("label", "?")
-    print(f"     第{rank}名  distance={d[i]:.6f}   {label}")
-
-print("\n  正确写法  out.sort(key=lambda x: x['similarity'], reverse=True)")
-for rank, i in enumerate(right, 1):
-    label = (metas[0][i] or {}).get("label", "?")
-    print(f"     第{rank}名  similarity={1-d[i]:.6f}   {label}")
-
-print()
-print("  >>> 错误写法把最不相关的排第 1，模型拿到的第一批上下文全是不相关的。")
-print("      这就是为什么必须做 1 - distance 这个转换 ——")
-print("      不是因为 cos 没算出来，而是因为【Chroma 交给你的已经是另一个数了】。")
-
-# ------------------------------------------------------------
-line("-")
-print("疑问 1 之三：一个类比")
-line("-")
-print("""
-  温度计给你的是「华氏 77 度」，你要的是「摄氏 25 度」。
-  你换算：C = (F - 32) / 1.8 → 25。
-  换算完得到的就是「摄氏温度本身」。
-
-  这不叫多此一举，这叫「把一个不是你想要的刻度，翻成你要的刻度」。
-  同理：
-      华氏 77      →  摄氏 25        （温度换算）
-      distance 0.25 →  similarity 0.75  （相似度换算）
-      换算结果确实"就是"摄氏温度/余弦相似度本身
-      但你手上原本拿到的那个数，不是它。
-""")
+path_a = []
+for i, dist in enumerate(dists):
+    label = (metas[i] or {}).get("label", "?")
+    cos_val = 1 - dist
+    path_a.append(cos_val)
+    print(f"  distance={dist:.6f}  →  cos={cos_val:.6f}   {label}")
 
 # ============================================================
 line()
-print("疑问 2：归一化向量 —— 为什么点积就等于余弦")
+print("路线 B：把库里的向量全拉出来，自己算点积（不用 distance 那一套）")
 line()
 
-A = np.array(embeddings.embed_query("糖醋汁的比例"), dtype=float)
-B = np.array(embeddings.embed_query("番茄酱和糖各放几勺"), dtype=float)
+raw = col.get(include=["embeddings", "metadatas", "documents"])
+vecs = np.array(raw["embeddings"], dtype=float)
+metas_b = raw["metadatas"]
+print(f"  库里共 {len(vecs)} 条向量，形状 {vecs.shape}")
 
+# 手算：cos = q·v / (|q||v|)
+q_norm = np.linalg.norm(qv)
+v_norms = np.linalg.norm(vecs, axis=1)
+dots = vecs @ qv
+cos_all = dots / (q_norm * v_norms)
 
-def cos_formula(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
-
-
-print(f"\n  向量 A 的长度 |A| = {np.linalg.norm(A):.10f}")
-print(f"  向量 B 的长度 |B| = {np.linalg.norm(B):.10f}")
-print("\n  >>> 两个长度都是 1。这就是「归一化」/「单位向量」。")
-
-print(f"\n  cos 完整公式      = A·B / (|A| × |B|) = {cos_formula(A, B):.10f}")
-print(f"  直接算点积  A·B   =                    {float(np.dot(A, B)):.10f}")
-print("  >>> 分母 |A|×|B| = 1×1 = 1，除以 1 不改变任何东西，所以点积 = cos。")
-
-# ------------------------------------------------------------
-line("-")
-print("疑问 2 之二：归一化的意义 —— 把 A 放大 7 倍，看看会发生什么")
-line("-")
-A7 = A * 7
-print(f"\n  A  的长度 = {np.linalg.norm(A):.6f}     A·B = {float(np.dot(A, B)):.8f}")
-print(f"  7A 的长度 = {np.linalg.norm(A7):.6f}     7A·B = {float(np.dot(A7, B)):.8f}   ← 点积变了！")
-print()
-print(f"  但 cos 呢？")
-print(f"      cos(A,  B) = {cos_formula(A, B):.10f}")
-print(f"      cos(7A, B) = {cos_formula(A7, B):.10f}")
-print("  >>> 一模一样。")
-print()
-print("  这说明：")
-print("     · 点积 会被「向量长短」污染 —— 长向量点积天然更大，不公平")
-print("     · 余弦 只看「方向」，不受长短影响 —— 这才是我们要的")
-print("     · 模型在输出前就把向量缩成长度 1，于是点积 = 余弦，两边好处都拿到了")
-
-# ------------------------------------------------------------
-line("-")
-print("疑问 2 之三：一个类比")
-line("-")
-print("""
-  你要判断两个人「朝哪个方向看」，来判断他们看到的是不是同一片风景。
-
-  如果只看「视线向量」，长一点短一点无所谓 —— 方向才是关键。
-  短视线的点积小，长视线的点积大，但那不代表谁看得更准。
-
-  归一化 = 要求所有人都站到「离原点 1 米」的圆上，
-           这样「箭头末端落在圆上的哪个位置」就只反映方向，不掺长度。
-           于是所有向量的点积和余弦变成同一个数，计算省一步，也不会有偏差。
-
-  你的模型（text-embedding-v4）出厂就是归一化的：
-      |v| = 1.0000000396 ≈ 1
-""")
+# 自己排序取前 5
+order = np.argsort(-cos_all)[:5]
+path_b = []
+for rank, idx in enumerate(order, 1):
+    label = (metas_b[idx] or {}).get("label", "?")
+    path_b.append(cos_all[idx])
+    print(f"  第{rank}名  cos={cos_all[idx]:.6f}   {label}")
 
 # ============================================================
 line()
-print("总结：三行代码，三个数，三个含义")
+print("对比：两条路算出来的 cos 一样吗")
 line()
-sim = 1 - d[0]
-print(f"""
-  问句「{Q}」 vs 最相关片段
+print(f"  {'排名':<6}{'路线A(1-distance)':>20}{'路线B(手算点积)':>20}{'差值':>14}")
+print("  " + "-" * 62)
+for i in range(5):
+    diff = abs(path_a[i] - path_b[i])
+    print(f"  {i+1:<6}{path_a[i]:>20.10f}{path_b[i]:>20.10f}{diff:>14.2e}")
+print()
+print(f"  最大差值: {max(abs(a-b) for a,b in zip(path_a,path_b)):.2e}")
+print("  >>> 两条路得到的是同一个数。所以『算 cos』和『1 - distance』不是两件事，")
+print("      它们是同一个结果，只是从哪一步开始算的区别。")
 
-  distance   = {d[0]:.6f}   ← Chroma 给你的原始值，越小越像
-  similarity = {sim:.6f}   ← 你自己翻的，越大越像，且数值等于 cos(夹角)
-  夹角       = {np.degrees(np.arccos(np.clip(sim, -1, 1))):.2f}°
+# ============================================================
+line()
+print("那为什么不干脆永远走路线 B？")
+line()
+import time  # noqa: E402
 
-  转换公式：similarity = 1 - distance = 1 - (1 - cos) = cos
-  那个 1 是「垂直」的坐标，不是余弦。
+t0 = time.perf_counter()
+for _ in range(20):
+    col.query(query_embeddings=[qv], n_results=5,
+              include=["documents", "metadatas", "distances"])
+t_a = (time.perf_counter() - t0) / 20
+
+t0 = time.perf_counter()
+for _ in range(20):
+    r = col.get(include=["embeddings"])
+    v = np.array(r["embeddings"], dtype=float)
+    _ = (v @ qv) / (q_norm * np.linalg.norm(v, axis=1))
+t_b = (time.perf_counter() - t0) / 20
+
+n = len(vecs)
+print(f"  当前只有 {n} 条向量时：")
+print(f"    路线 A（HNSW 索引检索） 耗时 {t_a*1000:8.2f} ms")
+print(f"    路线 B（全量拉出再算）  耗时 {t_b*1000:8.2f} ms")
+print()
+print("  现在看不出差距，因为数据太小。但增长曲线完全不同：")
+print()
+print(f"    {'向量条数':>12}{'路线A(索引)':>16}{'路线B(全量)':>18}{'倍数':>10}")
+print("    " + "-" * 56)
+for scale in (1, 100, 1000, 10000):
+    aa = t_a * 1.0                 # HNSW 近似对数增长，这里按最坏情况算线性
+    bb = t_b * scale
+    print(f"    {n*scale:>12,}{aa*1000:>14.2f}ms{bb*1000:>16.2f}ms{scale:>9}x")
+print()
+print("    路线 B 的时间跟向量总数成正比。1 万条就是 1 万倍。")
+print("    HNSW 索引的存在意义就是『不用把全部向量拉出来算一遍』。")
+print("    一旦你为了『直接拿 cos』而全量遍历，索引就白建了。")
+
+# ============================================================
+line()
+print("一句话总结")
+line()
+print("""
+  不是「需要 distance」，是「向量库只给 distance」。
+
+  Chroma 内部确实算了 cos，但按向量数据库的通用约定（所有距离度量
+  都统一成"越小越近"），它返回的是 1 - cos。
+
+  想直接拿到 cos 有两条路：
+    ① 让它算完再翻回来     ← 现在用的，1 次 API 调用，走索引
+    ② 自己把向量拉出来算   ← 数学上等价，但失去索引，数据一多就崩
+
+  路线 ② 在 18 条数据时看起来"更直接"，在 18 万条时是不可行的。
+  这就是为什么全世界的向量库都对外的字段叫 distance，不叫 similarity。
 """)
