@@ -66,8 +66,9 @@ async def _startup() -> None:
     if missing:
         logger.warning("缺少配置: %s —— 对话功能将不可用", ", ".join(missing))
     else:
-        logger.info("配置就绪 | 对话模型=%s | 向量模型=%s",
-                    config.CHAT_MODEL, config.EMBEDDING_MODEL)
+        logger.info("配置就绪 | %s", config.summary())
+    for w in config.warnings():
+        logger.warning("配置提醒 | %s", w)
     logger.info("界面地址: http://%s:%s", config.HOST, config.PORT)
 
 
@@ -90,6 +91,8 @@ async def health():
         "success": True,
         "ready": not missing,
         "missing_config": missing,
+        "config_warnings": config.warnings(),
+        "providers": config.providers(),
         "models": {
             "chat": config.CHAT_MODEL,
             "vision": config.VISION_MODEL,

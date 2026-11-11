@@ -160,6 +160,20 @@ body{
 }
 .badge.ok{border-color:rgba(127,191,127,.35);color:var(--green)}
 
+/* 顶栏的小标签：当前模型 / 配置提醒 */
+.tag{
+  font-size:10.5px;padding:2.5px 9px;border-radius:20px;
+  white-space:nowrap;border:1px solid var(--line);
+  background:var(--panel);color:var(--txt-2);cursor:default;
+  max-width:260px;overflow:hidden;text-overflow:ellipsis;
+}
+.tag.model{border-color:rgba(240,160,75,.3);color:var(--amber)}
+.tag.warn{border-color:rgba(226,120,110,.45);color:#e2786e;cursor:help}
+@media(max-width:760px){
+  .tag.model{display:none}
+  .tag.warn{display:none}
+}
+
 /* 消息区 */
 .msgs{flex:1;overflow-y:auto;padding:22px 0 8px;scroll-behavior:smooth}
 .msgs-inner{max-width:830px;margin:0 auto;padding:0 22px}
@@ -459,6 +473,8 @@ textarea#input::placeholder{color:var(--txt-3)}
     <header class="topbar">
       <button class="iconbtn" id="btnMenu" title="菜单">☰</button>
       <div class="title" id="chatTitle">新对话</div>
+      <span class="tag warn" id="warnTag" hidden>配置提醒</span>
+      <span class="tag model" id="modelTag" hidden>模型</span>
       <span class="badge" id="kbBadge">知识库 0 条</span>
     </header>
 
@@ -876,12 +892,28 @@ async function loadFacts() {
 async function checkHealth() {
   try {
     const h = await fetch("/api/health").then(r => r.json());
+    const p = h.providers || {};
     if (h.ready) {
       $("#statusDot").className = "dot";
       $("#statusTxt").textContent = `已连接 · ${h.knowledge_base.chunks || 0} 条知识`;
+      // 显示当前对话模型用的是哪家，换模型后一眼能看出来
+      if (p.chat) {
+        $("#modelTag").textContent = `${p.chat.provider} · ${p.chat.model}`;
+        $("#modelTag").title =
+          `对话：${p.chat.provider} / ${p.chat.model}\n` +
+          `视觉：${p.vision ? p.vision.provider + " / " + p.vision.model : "?"}\n` +
+          `向量：${p.embedding ? p.embedding.provider + " / " + p.embedding.model + " (" + p.embedding.dim + " 维)" : "?"}`;
+        $("#modelTag").hidden = false;
+      }
     } else {
       $("#statusDot").className = "dot off";
-      $("#statusTxt").textContent = "缺少配置：" + h.missing_config.join(",");
+      $("#statusTxt").textContent = "缺少配置：" + (h.missing_config || []).join(",");
+    }
+    // 配置有隐患时在标题栏提示（比如把向量模型指到了不支持 embedding 的厂商）
+    if (h.config_warnings && h.config_warnings.length) {
+      $("#warnTag").textContent = "配置提醒";
+      $("#warnTag").title = h.config_warnings.join("\n\n");
+      $("#warnTag").hidden = false;
     }
   } catch (e) {
     $("#statusDot").className = "dot off";

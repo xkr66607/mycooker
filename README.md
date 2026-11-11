@@ -43,7 +43,47 @@ python -m venv venv
 venv\Scripts\pip install -r requirements.txt
 ```
 
-然后在 `.env` 里填好 `DASHSCOPE_API_KEY`。
+然后在 `.env` 里填好 Key（照 `.env.example` 抄一份改名即可）。
+
+---
+
+## 一·五、怎么换模型
+
+模型分三块，**能力不同，不能随便互换**：
+
+| 配置块 | 用途 | 能换成什么 |
+|---|---|---|
+| `CHAT_*` | 文本对话 | 千问 / DeepSeek / 任意 OpenAI 兼容服务 |
+| `VISION_*` | 看食材照片 | 千问 `qwen-vl-*` / GPT-4o 等**有视觉能力**的 |
+| `EMBEDDING_*` | 把文字变向量 | 千问 `text-embedding-v4` / OpenAI 等**有 embedding 接口**的 |
+
+### 换对话模型到 DeepSeek（示例）
+
+在 `.env` 里加三行，改完重启即可：
+
+```ini
+CHAT_API_KEY=sk-你的DeepSeekKey
+CHAT_BASE_URL=https://api.deepseek.com
+CHAT_MODEL=deepseek-chat
+```
+
+**注意：向量和视觉要留在千问。**
+
+实测结论（2026-11）：
+
+```
+POST https://api.deepseek.com/embeddings    → 404
+POST https://api.deepseek.com/v1/embeddings → 404
+```
+
+DeepSeek 官方文档的 12 个端点里没有任何 embedding 接口，也没有多模态模型。
+所以「对话换 DeepSeek」可以，「向量换 DeepSeek」会直接 404。
+
+代码里已经做了隔离：`VISION_*` 不继承 `CHAT_*`，换对话模型不会影响图片识别。
+配错了 `/api/health` 的 `config_warnings` 会明确提示。
+
+> `deepseek-reasoner` 也能用，但它的思考过程不占 `content`，
+> 给很短的 `max_tokens` 会得到空回复。日常建议用 `deepseek-chat`。
 
 ---
 
@@ -115,7 +155,7 @@ mycooker/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/health` | 健康检查：配置是否齐全、知识库有多少条 |
+| GET | `/api/health` | 健康检查：配置是否齐全、三块模型各是哪个厂商、知识库多少条 |
 | POST | `/api/v1/chat/stream` | 流式对话（SSE） |
 | GET | `/api/v1/chat/conversations` | 会话列表 |
 | GET | `/api/v1/chat/messages?conversation_id=` | 某会话的消息 |

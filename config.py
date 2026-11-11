@@ -5,6 +5,19 @@
 1. 全部从 .env 读取，带合理默认值，缺配置也能起服务（降级为提示而不是崩溃）
 2. 路径全部基于项目根目录推导，不依赖启动时的工作目录
 3. 分组清晰：模型 / 切分 / 检索 / 记忆 / 存储
+
+⚠️ 模型分三块，各自独立配置，因为不同厂商能力不一样：
+
+    ┌─────────────┬──────────────────────┬──────────────────────────┐
+    │ 用途        │ 需要什么能力          │ 能换哪些厂商              │
+    ├─────────────┼──────────────────────┼──────────────────────────┤
+    │ CHAT_*      │ 文本对话              │ 千问 / DeepSeek / 任意    │
+    │ VISION_*    │ 看图（多模态）        │ 千问 qwen-vl / GPT 等  │
+    │ EMBEDDING_* │ 把文字变成向量        │ 千问 / OpenAI / BGE 等    │
+    └─────────────┴──────────────────────┴──────────────────────────┘
+
+    实测结论：DeepSeek 的 /embeddings 返回 404，它没有向量接口。
+    所以「对话换 DeepSeek」可以，「向量换 DeepSeek」不行 —— 向量必须留在千问。
 """
 import os
 from pathlib import Path
@@ -23,25 +36,68 @@ DB_PATH = DATA_DIR / "mycooker.db"
 for _d in (DATA_DIR, CHROMA_DIR, UPLOAD_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# ---------------------------------------------------------------- 模型
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
-DASHSCOPE_BASE_URL = (
-    os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-).strip()
-
-# 对话模型 / 视觉模型 / 向量模型
-CHAT_MODEL = os.getenv("MYCOOKER_CHAT_MODEL", "qwen-plus")
-VISION_MODEL = os.getenv("MYCOOKER_VISION_MODEL", "qwen-vl-plus")
-EMBEDDING_MODEL = os.getenv("MYCOOKER_EMBEDDING_MODEL", "text-embedding-v4")
-EMBEDDING_DIM = int(os.getenv("MYCOOKER_EMBEDDING_DIM", "1024"))
-
-# DashScope 原生 embedding 接口（与 OpenAI 兼容接口不是同一个地址）
-EMBEDDING_URL = os.getenv(
-    "MYCOOKER_EMBEDDING_URL",
-    "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
+# ---------------------------------------------------------------- 通用取值工具
+_DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_DEFAULT_DASHSCOPE_EMBED = (
+    "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
 )
+
+
+def _env(*names: str) -> str:
+    """按顺序取第一个非空的环境变量值，都没有返回空串。
+
+    支持多个名字是为了向后兼容：新名字优先，旧名字（MYCOOKER_ 前缀）兜底。
+    """
+    for n in names:
+        v = os.getenv(n, "").strip()
+        if v:
+            return v
+    return ""
+
+
+# ================================================================
+# 千问（DashScope）基础凭证 —— 向量模型一直用它，不要动
+# ================================================================
+DASHSCOPE_API_KEY = _env("DASHSCOPE_API_KEY")
+DASHSCOPE_BASE_URL = _env("DASHSCOPE_BASE_URL") or _DEFAULT_DASHSCOPE_BASE
+
+# ================================================================
+# 1. 对话模型（CHAT_*）—— 想换 DeepSeek 就改这里
+# ================================================================
+# 例子 A（默认，用千问）：
+#     CHAT_API_KEY   = （留空，自动用 DASHSCOPE_API_KEY）
+#     CHAT_BASE_URL  = （留空，自动用 DASHSCOPE_BASE_URL）
+#     CHAT_MODEL     = qwen-plus
+#
+# 例子 B（换成 DeepSeek）：
+#     CHAT_API_KEY   = sk-你的DeepSeekKey
+#     CHAT_BASE_URL  = https://api.deepseek.com
+#     CHAT_MODEL     = deepseek-chat        （或 deepseek-flash / deepseek-v4-pro）
+CHAT_API_KEY = _env("CHAT_API_KEY") or DASHSCOPE_API_KEY
+CHAT_BASE_URL = (_env("CHAT_BASE_URL") or DASHSCOPE_BASE_URL).rstrip("/")
+CHAT_MODEL = _env("CHAT_MODEL", "MYCOOKER_CHAT_MODEL") or "qwen-plus"
+
+# ================================================================
+# 2. 视觉模型（VISION_*）—— 识别食材照片用
+# ================================================================
+# 默认跟随千问，因为 DeepSeek 目前没有多模态模型。
+# 如果对话已经换成 DeepSeek，这里仍然是千问，两者互不影响。
+VISION_API_KEY = _env("VISION_API_KEY") or DASHSCOPE_API_KEY
+VISION_BASE_URL = (_env("VISION_BASE_URL") or DASHSCOPE_BASE_URL).rstrip("/")
+VISION_MODEL = _env("VISION_MODEL", "MYCOOKER_VISION_MODEL") or "qwen-vl-plus"
+
+# ================================================================
+# 3. 向量模型（EMBEDDING_*）—— 检索的地基，动了要重建知识库
+# ================================================================
+# ⚠️ 换 embedding 模型 = 向量维度/语义空间变了 = 旧向量全部作废，必须清库重传。
+#    所以这个默认值不要轻易改。
+EMBEDDING_API_KEY = _env("EMBEDDING_API_KEY") or DASHSCOPE_API_KEY
+EMBEDDING_MODEL = _env("EMBEDDING_MODEL", "MYCOOKER_EMBEDDING_MODEL") or "text-embedding-v4"
+EMBEDDING_DIM = int(_env("EMBEDDING_DIM", "MYCOOKER_EMBEDDING_DIM") or "1024")
+# DashScope 原生 embedding 接口（注意：和 OpenAI 兼容接口不是同一个地址）
+EMBEDDING_URL = _env("EMBEDDING_URL", "MYCOOKER_EMBEDDING_URL") or _DEFAULT_DASHSCOPE_EMBED
 # 单次最多多少条文本送 embed（官方限制 25，留点余量）
-EMBEDDING_BATCH = int(os.getenv("MYCOOKER_EMBEDDING_BATCH", "10"))
+EMBEDDING_BATCH = int(_env("EMBEDDING_BATCH", "MYCOOKER_EMBEDDING_BATCH") or "10")
 
 # ---------------------------------------------------------------- 切分
 CHUNK_SIZE = int(os.getenv("MYCOOKER_CHUNK_SIZE", "350"))
@@ -68,9 +124,89 @@ PORT = int(os.getenv("MYCOOKER_PORT", "8001"))
 COLLECTION = os.getenv("MYCOOKER_COLLECTION", "mycooker_kb")
 
 
+# ---------------------------------------------------------------- 自检与展示
+def _provider_of(base_url: str) -> str:
+    """从 base_url 猜厂商名，只用于显示。"""
+    u = (base_url or "").lower()
+    if "dashscope" in u or "aliyuncs" in u:
+        return "千问 DashScope"
+    if "deepseek" in u:
+        return "DeepSeek"
+    if "openai" in u:
+        return "OpenAI"
+    if "moonshot" in u:
+        return "月之暗面"
+    if "bigmodel" in u or "zhipu" in u:
+        return "智谱"
+    if "siliconflow" in u:
+        return "硅基流动"
+    return base_url or "未知"
+
+
+def providers() -> dict:
+    """当前生效的三块模型服务，给 /api/health 和启动日志用。"""
+    return {
+        "chat": {
+            "provider": _provider_of(CHAT_BASE_URL),
+            "model": CHAT_MODEL,
+            "base_url": CHAT_BASE_URL,
+        },
+        "vision": {
+            "provider": _provider_of(VISION_BASE_URL),
+            "model": VISION_MODEL,
+            "base_url": VISION_BASE_URL,
+        },
+        "embedding": {
+            "provider": _provider_of(EMBEDDING_URL),
+            "model": EMBEDDING_MODEL,
+            "dim": EMBEDDING_DIM,
+        },
+    }
+
+
+def summary() -> str:
+    """一行式描述，打日志用。"""
+    p = providers()
+    return (
+        f"对话={p['chat']['provider']}/{p['chat']['model']} | "
+        f"视觉={p['vision']['provider']}/{p['vision']['model']} | "
+        f"向量={p['embedding']['provider']}/{p['embedding']['model']}({EMBEDDING_DIM}维)"
+    )
+
+
 def assert_ready() -> list[str]:
     """返回缺失的关键配置项，空列表表示就绪。"""
     missing = []
-    if not DASHSCOPE_API_KEY:
-        missing.append("DASHSCOPE_API_KEY")
+    if not CHAT_API_KEY:
+        missing.append("CHAT_API_KEY（或 DASHSCOPE_API_KEY）")
+    if not EMBEDDING_API_KEY:
+        missing.append("EMBEDDING_API_KEY（或 DASHSCOPE_API_KEY）")
+    if not VISION_API_KEY:
+        missing.append("VISION_API_KEY（或 DASHSCOPE_API_KEY）")
     return missing
+
+
+def warnings() -> list[str]:
+    """不致命但值得提醒的问题。"""
+    out = []
+    # DeepSeek 没有 embedding 接口，配错了会在入库时 404
+    if "deepseek" in EMBEDDING_URL.lower():
+        out.append(
+            "EMBEDDING_URL 指向了 DeepSeek，但 DeepSeek 没有向量接口（/embeddings 返回 404）。"
+            "向量模型请继续使用千问 text-embedding-v4。"
+        )
+    # DeepSeek 没有视觉模型，配错了图片识别会失败
+    if "deepseek" in VISION_BASE_URL.lower():
+        out.append(
+            "VISION_BASE_URL 指向了 DeepSeek，但 DeepSeek 目前没有多模态模型，"
+            "食材图片识别会失败。视觉请继续使用千问 qwen-vl-plus。"
+        )
+    # 两边是同一家但用了不同 key，通常是误配
+    if (
+        _provider_of(CHAT_BASE_URL) == _provider_of(EMBEDDING_URL)
+        and CHAT_API_KEY
+        and EMBEDDING_API_KEY
+        and CHAT_API_KEY != EMBEDDING_API_KEY
+    ):
+        out.append("CHAT_API_KEY 和 EMBEDDING_API_KEY 指向同一家服务但 Key 不同，请确认是否有意为之。")
+    return out

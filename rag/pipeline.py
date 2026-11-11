@@ -21,7 +21,9 @@ from rag import embeddings, store
 
 logger = logging.getLogger(__name__)
 
-_client: AsyncOpenAI | None = None
+# 对话和视觉可能是两家不同的服务商，各用一个客户端
+_chat_client: AsyncOpenAI | None = None
+_vision_client: AsyncOpenAI | None = None
 
 SYSTEM_PROMPT = """你是「小厨」，一位专业的私人厨房 AI 助手。
 
@@ -38,24 +40,40 @@ SYSTEM_PROMPT = """你是「小厨」，一位专业的私人厨房 AI 助手。
 
 
 def _get_client() -> AsyncOpenAI:
-    global _client
-    if _client is None:
+    """对话客户端。CHAT_* 可以指向千问、DeepSeek 或任意 OpenAI 兼容服务。"""
+    global _chat_client
+    if _chat_client is None:
         missing = config.assert_ready()
         if missing:
             raise RuntimeError(f"缺少配置: {', '.join(missing)}，请在 .env 中填写")
-        _client = AsyncOpenAI(
-            api_key=config.DASHSCOPE_API_KEY,
-            base_url=config.DASHSCOPE_BASE_URL,
+        _chat_client = AsyncOpenAI(
+            api_key=config.CHAT_API_KEY,
+            base_url=config.CHAT_BASE_URL,
             timeout=120,
         )
-    return _client
+    return _chat_client
+
+
+def _get_vision_client() -> AsyncOpenAI:
+    """视觉客户端。单独一个，因为对话换成 DeepSeek 后它没有多模态能力，
+    图片识别必须继续走千问，两者不能共用一个 base_url。"""
+    global _vision_client
+    if _vision_client is None:
+        if not config.VISION_API_KEY:
+            raise RuntimeError("缺少 VISION_API_KEY（或 DASHSCOPE_API_KEY），无法识别图片")
+        _vision_client = AsyncOpenAI(
+            api_key=config.VISION_API_KEY,
+            base_url=config.VISION_BASE_URL,
+            timeout=120,
+        )
+    return _vision_client
 
 
 # ------------------------------------------------------------------ 视觉识别食材
 async def recognize_ingredients(image_url: str) -> str:
     """用视觉模型从照片里认出食材清单。失败返回空串，不阻断主流程。"""
     try:
-        client = _get_client()
+        client = _get_vision_client()
         resp = await client.chat.completions.create(
             model=config.VISION_MODEL,
             messages=[

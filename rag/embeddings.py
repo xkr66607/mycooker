@@ -26,8 +26,8 @@ class EmbeddingError(RuntimeError):
 
 def _request(texts: list[str], text_type: str, retries: int = 3) -> list[list[float]]:
     """调一次 DashScope embedding 接口，失败自动重试（指数退避）。"""
-    if not config.DASHSCOPE_API_KEY:
-        raise EmbeddingError("缺少 DASHSCOPE_API_KEY，无法向量化")
+    if not config.EMBEDDING_API_KEY:
+        raise EmbeddingError("缺少 EMBEDDING_API_KEY（或 DASHSCOPE_API_KEY），无法向量化")
 
     payload = {
         "model": config.EMBEDDING_MODEL,
@@ -35,7 +35,7 @@ def _request(texts: list[str], text_type: str, retries: int = 3) -> list[list[fl
         "parameters": {"dimension": config.EMBEDDING_DIM, "text_type": text_type},
     }
     headers = {
-        "Authorization": f"Bearer {config.DASHSCOPE_API_KEY}",
+        "Authorization": f"Bearer {config.EMBEDDING_API_KEY}",
         "Content-Type": "application/json",
     }
 
@@ -56,6 +56,16 @@ def _request(texts: list[str], text_type: str, retries: int = 3) -> list[list[fl
 
             # 429 / 5xx 值得重试，4xx 其它错误重试也没用
             last_err = f"HTTP {resp.status_code}: {resp.text[:300]}"
+            if resp.status_code == 404:
+                # 最常见的原因：把 EMBEDDING_URL 指向了不提供向量接口的厂商
+                raise EmbeddingError(
+                    f"向量接口 404，地址不存在：{config.EMBEDDING_URL}\n"
+                    "  常见原因：EMBEDDING_URL 指向了 DeepSeek（它没有 /embeddings 接口）。\n"
+                    "  向量模型请继续使用千问：\n"
+                    "    EMBEDDING_API_KEY = 你的千问 Key\n"
+                    "    EMBEDDING_URL     = https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding\n"
+                    "    EMBEDDING_MODEL   = text-embedding-v4"
+                )
             if resp.status_code not in (429, 500, 502, 503, 504):
                 raise EmbeddingError(last_err)
         except requests.RequestException as exc:
