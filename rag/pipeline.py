@@ -269,10 +269,14 @@ async def stream_chat(
             temperature=0.6,
             max_tokens=config.CHAT_MAX_TOKENS,
         )
+        finish_reason = None
+        think_chars = 0
         async for chunk in stream:
             if not chunk.choices:
                 continue
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            finish_reason = choice.finish_reason or finish_reason
+            delta = choice.delta
 
             # 推理模型（deepseek-v4.1-flash 等）会先吐一大段思考过程，
             # 放在 reasoning_content 里。这段不能混进正文，否则答案里全是内心戏；
@@ -280,6 +284,7 @@ async def stream_chat(
             # 所以单独发一个 thinking 事件，前端只用来显示"思考中"。
             think = getattr(delta, "reasoning_content", None)
             if think:
+                think_chars += len(think)
                 yield {"type": "thinking", "text": think}
 
             piece = getattr(delta, "content", None)
@@ -290,10 +295,21 @@ async def stream_chat(
                 yield {"type": "delta", "text": piece}
     except Exception as exc:
         logger.exception("生成失败")
+        # 已经吐出来的部分也存下来，别让用户白等一场
+        partial = "".join(answer_parts).strip()
+        if partial:
+            memory.add_message(cid, "user", question, [])
+            memory.add_message(cid, "assistant", partial, [])
         yield {"type": "error", "message": _explain_error(exc)}
         return
 
     answer = "".join(answer_parts).strip()
+
+    # 流正常结束了，但一个字都没有。这种情况前端只会显示「没有收到内容」，
+    # 用户完全不知道为什么。这里主动给出原因。
+    if not answer:
+        yield {"type": "error", "message": _explain_empty(finish_reason, think_chars)}
+        return
 
     # 5) 落库
     cited = _extract_citations(answer, sources)
@@ -301,6 +317,33 @@ async def stream_chat(
     memory.add_message(cid, "assistant", answer, cited)
 
     yield {"type": "done", "citations": cited}
+
+
+def _explain_empty(finish_reason: str | None, think_chars: int) -> str:
+    """模型一个字都没说，给出可执行的原因和下一步。"""
+    approx_tokens = int(think_chars * 1.4)
+    if finish_reason == "length":
+        return (
+            f"回答被截断了：思考用了约 {approx_tokens} token，把 CHAT_MAX_TOKENS="
+            f"{config.CHAT_MAX_TOKENS} 全吃光了，没给正文留空间。\n"
+            "  解决：把 .env 里的 CHAT_MAX_TOKENS 调大（比如 8000），或换个简单点的问题。\n"
+            "  推理模型的思考过程也算 token，这是它和普通模型最大的区别。"
+        )
+    if finish_reason == "content_filter":
+        return "内容被安全策略拦截了，换个问法试试。"
+    if think_chars > 0:
+        return (
+            f"模型只思考没回答（思考了 {think_chars} 字，约 {approx_tokens} token，"
+            f"finish_reason={finish_reason}）。\n"
+            "  通常是把 CHAT_MAX_TOKENS 调大就能解决，当前值：" f"{config.CHAT_MAX_TOKENS}。"
+        )
+    return (
+        "模型返回了空内容。可能原因：\n"
+        f"  · 模型名不对（当前 {config.CHAT_MODEL}）\n"
+        "  · 输入触发了安全过滤\n"
+        "  · 服务端临时异常\n"
+        "  先看看后端日志，再重试一次。"
+    )
 
 
 def _explain_error(exc: Exception) -> str:
