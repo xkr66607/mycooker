@@ -169,6 +169,26 @@ body{
 }
 .tag.model{border-color:rgba(240,160,75,.3);color:var(--amber)}
 .tag.warn{border-color:rgba(226,120,110,.45);color:#e2786e;cursor:help}
+
+/* 推理模型的思考中提示 */
+.thinkingbar{
+  display:flex;align-items:center;gap:8px;
+  color:var(--txt-2);font-size:13px;padding:2px 0;
+}
+.thinkingbar .spinner{
+  width:12px;height:12px;border-radius:50%;
+  border:2px solid var(--line);border-top-color:var(--amber);
+  animation:spin .7s linear infinite;flex:0 0 auto;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.thinkingbar .dots::after{
+  content:"";animation:dots 1.2s steps(4,end) infinite;
+}
+@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+.thinkingbar .thinkcnt{
+  margin-left:auto;font-size:11px;color:var(--txt-3, #7a736c);
+  font-variant-numeric:tabular-nums;
+}
 @media(max-width:760px){
   .tag.model{display:none}
   .tag.warn{display:none}
@@ -975,6 +995,7 @@ async function send() {
   let acc = "";
   let sources = [];
   let firstDelta = true;
+  let thinkChars = 0;   // 推理模型思考字数，只用于展示进度
 
   try {
     const ctrl = new AbortController();
@@ -1030,6 +1051,28 @@ async function send() {
           case "sources":
             sources = ev.sources || [];
             renderSources(srcBox, sources);
+            break;
+
+          case "thinking":
+            // 推理模型会先思考一大段。这段不进正文，只用来告诉用户"它在干活"，
+            // 否则空白屏幕会让人以为卡死了。
+            thinkChars += (ev.text || "").length;
+            if (firstDelta) {
+              bubble.classList.remove("thinking");
+              bubble.innerHTML =
+                `<div class="thinkingbar"><span class="spinner"></span>` +
+                `正在思考<span class="dots"></span>` +
+                `<span class="thinkcnt">${thinkChars} 字</span></div>`;
+              scrollBottom();
+            }
+            break;
+
+          case "answer_start":
+            if (firstDelta) {
+              bubble.classList.remove("thinking");
+              bubble.innerHTML = "";
+              firstDelta = false;
+            }
             break;
 
           case "delta":

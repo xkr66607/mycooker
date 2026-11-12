@@ -57,9 +57,15 @@ venv\Scripts\pip install -r requirements.txt
 | `VISION_*` | 看食材照片 | 千问 `qwen-vl-*` / GPT-4o 等**有视觉能力**的 |
 | `EMBEDDING_*` | 把文字变向量 | 千问 `text-embedding-v4` / OpenAI 等**有 embedding 接口**的 |
 
-### 换对话模型到 DeepSeek（示例）
+### 换对话模型
 
-在 `.env` 里加三行，改完重启即可：
+**方式一：通过千问（DashScope）调 DeepSeek** —— 只改模型名，一行搞定：
+
+```ini
+CHAT_MODEL=deepseek-v4.1-flash
+```
+
+**方式二：走 DeepSeek 官方 API** —— 三行都要填：
 
 ```ini
 CHAT_API_KEY=sk-你的DeepSeekKey
@@ -67,23 +73,42 @@ CHAT_BASE_URL=https://api.deepseek.com
 CHAT_MODEL=deepseek-chat
 ```
 
-**注意：向量和视觉要留在千问。**
+> ⚠️ **最容易踩的坑：两家平台模型命名不一样。**
+>
+> | 平台 | 模型名 |
+> |---|---|
+> | 千问 DashScope | `deepseek-v4.1-flash` / `deepseek-v4-pro` |
+> | DeepSeek 官方 | `deepseek-chat` / `deepseek-reasoner` |
+>
+> 混着填会得到 `404 The model xxx does not exist`。代码里已经把这种错误翻译成人话了。
 
-实测结论（2026-11）：
+### 为什么视觉仍然用千问
 
-```
+`deepseek-v4.1-flash` **确实支持看图**，实测能准确读出截图里的文字。
+但它是**推理模型**——回答前要先思考，而思考 token 也算钱。
+
+同一张图、同一句提示词：
+
+| 模型 | 耗时 | 思考 token | 正文 token | 稳定性 |
+|---|---|---|---|---|
+| `qwen3-vl-plus` | 5.7 s | 0 | 29 | 稳定 |
+| `deepseek-v4.1-flash` | 9~15 s | **1378 ~ 5190** | 67 | 配额给小了正文就是空 |
+
+思考长度每次都不一样（实测跳了 4 倍），所以用它做视觉得把
+`VISION_MAX_TOKENS` 抬到 8000 才勉强稳。为了列一个食材清单花 5000 个 token，
+不划算。**所以视觉默认 `qwen3-vl-plus`，对话随你选。**
+
+### embedding 为什么不能换 DeepSeek
+
+```bash
 POST https://api.deepseek.com/embeddings    → 404
 POST https://api.deepseek.com/v1/embeddings → 404
 ```
 
-DeepSeek 官方文档的 12 个端点里没有任何 embedding 接口，也没有多模态模型。
-所以「对话换 DeepSeek」可以，「向量换 DeepSeek」会直接 404。
+DeepSeek 官方文档的 12 个端点里没有任何向量接口。向量只能用千问。
 
-代码里已经做了隔离：`VISION_*` 不继承 `CHAT_*`，换对话模型不会影响图片识别。
-配错了 `/api/health` 的 `config_warnings` 会明确提示。
-
-> `deepseek-reasoner` 也能用，但它的思考过程不占 `content`，
-> 给很短的 `max_tokens` 会得到空回复。日常建议用 `deepseek-chat`。
+代码里三块配置是彼此隔离的：`VISION_*` 不继承 `CHAT_*`，换对话模型不影响图片识别。
+配错了 `/api/health` 的 `config_warnings` 会明确提示，前端顶栏亮红色角标。
 
 ---
 

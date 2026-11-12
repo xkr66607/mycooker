@@ -90,9 +90,22 @@ async def recognize_ingredients(image_url: str) -> str:
                     ],
                 }
             ],
-            max_tokens=200,
+            # ⚠️ 这里不能给小。推理模型（deepseek-v4.1-flash）先花 token 思考，
+            #    再花 token 回答。给 200 的话思考就烧光了，content 返回空串，
+            #    表现是「图片识别静默失效」——这个坑踩过一次。
+            max_tokens=config.VISION_MAX_TOKENS,
         )
-        text = (resp.choices[0].message.content or "").strip()
+        msg = resp.choices[0].message
+        text = (msg.content or "").strip()
+        if not text:
+            # 常见原因：思考吃光配额。把现场信息记下来，别静默失败。
+            think = getattr(msg, "reasoning_content", None) or ""
+            logger.warning(
+                "视觉模型返回空正文（model=%s，思考内容 %s 字，finish_reason=%s）。"
+                "如果思考内容不为空，说明 max_tokens=%s 太小，调大 VISION_MAX_TOKENS。",
+                config.VISION_MODEL, len(think),
+                resp.choices[0].finish_reason, config.VISION_MAX_TOKENS,
+            )
         logger.info("视觉识别结果: %s", text)
         return text
     except Exception as exc:
@@ -254,19 +267,30 @@ async def stream_chat(
             messages=messages,
             stream=True,
             temperature=0.6,
-            max_tokens=2000,
+            max_tokens=config.CHAT_MAX_TOKENS,
         )
         async for chunk in stream:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
+
+            # 推理模型（deepseek-v4.1-flash 等）会先吐一大段思考过程，
+            # 放在 reasoning_content 里。这段不能混进正文，否则答案里全是内心戏；
+            # 但完全丢掉的话，用户会盯着空白屏幕等好几秒。
+            # 所以单独发一个 thinking 事件，前端只用来显示"思考中"。
+            think = getattr(delta, "reasoning_content", None)
+            if think:
+                yield {"type": "thinking", "text": think}
+
             piece = getattr(delta, "content", None)
             if piece:
+                if not answer_parts:
+                    yield {"type": "answer_start"}
                 answer_parts.append(piece)
                 yield {"type": "delta", "text": piece}
     except Exception as exc:
         logger.exception("生成失败")
-        yield {"type": "error", "message": f"生成失败: {exc}"}
+        yield {"type": "error", "message": _explain_error(exc)}
         return
 
     answer = "".join(answer_parts).strip()
@@ -277,6 +301,38 @@ async def stream_chat(
     memory.add_message(cid, "assistant", answer, cited)
 
     yield {"type": "done", "citations": cited}
+
+
+def _explain_error(exc: Exception) -> str:
+    """把底层异常翻译成人能看懂的话。
+
+    最常见的坑：CHAT_MODEL 填了别家的模型名。
+    DeepSeek 官方 API 叫 deepseek-chat / deepseek-reasoner，
+    但通过千问（DashScope）调用时得叫 deepseek-v4.1-flash / deepseek-v4-pro。
+    名字不对会得到 404「The model xxx does not exist」，而原始报错很难懂。
+    """
+    text = str(exc)
+    low = text.lower()
+
+    if "does not exist" in low or "model_not_found" in low or "model not exist" in low:
+        return (
+            f"模型名不对：{config.CHAT_MODEL}\n"
+            "  这个模型在当前服务商那里不存在。检查 .env 里的 CHAT_MODEL：\n"
+            "    · 通过千问(DashScope)调用 → deepseek-v4.1-flash / deepseek-v4-pro / qwen-plus\n"
+            "    · 通过 DeepSeek 官方 API → 需同时设 CHAT_BASE_URL=https://api.deepseek.com，"
+            "模型名才是 deepseek-chat\n"
+            "  两家平台的模型命名不一样，这是最容易踩的坑。"
+        )
+    if "401" in low or "invalid_api_key" in low or "authentication" in low:
+        return (
+            f"鉴权失败：{config.CHAT_API_KEY[:6]}...（{len(config.CHAT_API_KEY)} 字符）\n"
+            "  检查 .env 里的 CHAT_API_KEY / DASHSCOPE_API_KEY 是否正确、是否过期。"
+        )
+    if "429" in low or "rate limit" in low:
+        return "调用太频繁被限流了，等几秒再试。"
+    if "insufficient" in low or "balance" in low or "quota" in low:
+        return "账户余额或额度不足，去控制台充值。"
+    return f"生成失败: {text}"
 
 
 def _extract_citations(answer: str, sources: list[dict]) -> list[dict]:
