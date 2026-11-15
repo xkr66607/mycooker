@@ -16,8 +16,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+import config
 from memory import store as memory
-from rag import pipeline
+from rag import agent, pipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,6 +28,9 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     conversation_id: str | None = None
     image_url: str | None = None
+    # None = 用服务端配置；true/false = 本次请求强制走 Agent / RAG。
+    # 留着这个开关是为了能拿同一批问题跑两种模式做对比。
+    agent: bool | None = None
 
 
 def _sse(event: dict) -> str:
@@ -36,15 +40,29 @@ def _sse(event: dict) -> str:
 
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """流式对话：返回 SSE 事件流。"""
+    """流式对话：返回 SSE 事件流。
+
+    Agent 模式（默认）由模型自己决定调哪些工具、调几次；
+    RAG 模式固定检索一次。两种模式的事件类型兼容，
+    前端不用改。
+    """
+    use_agent = config.AGENT_ENABLED if req.agent is None else req.agent
 
     async def gen():
         try:
-            async for event in pipeline.stream_chat(
-                question=req.message.strip(),
-                conversation_id=req.conversation_id,
-                image_url=req.image_url,
-            ):
+            if use_agent:
+                stream = agent.stream_agent(
+                    question=req.message.strip(),
+                    conversation_id=req.conversation_id,
+                    image_url=req.image_url,
+                )
+            else:
+                stream = pipeline.stream_chat(
+                    question=req.message.strip(),
+                    conversation_id=req.conversation_id,
+                    image_url=req.image_url,
+                )
+            async for event in stream:
                 yield _sse(event)
         except Exception as exc:  # 兜底：任何未捕获异常都转成一条 error 事件
             logger.exception("对话流异常")

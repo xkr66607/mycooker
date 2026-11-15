@@ -189,6 +189,19 @@ body{
   margin-left:auto;font-size:11px;color:var(--txt-3, #7a736c);
   font-variant-numeric:tabular-nums;
 }
+
+/* Agent 执行摘要：几 步、调了几次工具、耗时多久 */
+.agentmeta{
+  display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;padding-left:2px;
+}
+.agentmeta[hidden]{display:none}
+.agentmeta .am-item{
+  font-size:11px;color:var(--txt-3, #7a736c);
+  background:rgba(255,255,255,.035);
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:999px;padding:2px 9px;
+  font-variant-numeric:tabular-nums;
+}
 @media(max-width:760px){
   .tag.model{display:none}
   .tag.warn{display:none}
@@ -559,6 +572,16 @@ textarea#input::placeholder{color:var(--txt-3)}
 
 const API = "/api/v1";
 const $  = (s) => document.querySelector(s);
+
+/* Agent 调工具时给用户看的话。工具名是给机器看的，这里是给人看的。
+   没列到的工具会退化成"处理中"。 */
+const TOOL_LABEL = {
+  search_kb:      "正在查知识库",
+  get_dish:       "正在查菜谱",
+  list_dishes:    "正在看有哪些菜",
+  calc_nutrition: "正在算营养",
+};
+
 const el = (tag, cls, html) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -963,6 +986,7 @@ function addAiMsg() {
     <div class="bubble-wrap">
       <div class="bubble thinking">正在检索知识库…</div>
       <div class="sources"></div>
+      <div class="agentmeta"></div>
     </div>`;
   $("#msgsInner").appendChild(m);
   scrollBottom();
@@ -996,6 +1020,7 @@ async function send() {
   let sources = [];
   let firstDelta = true;
   let thinkChars = 0;   // 推理模型思考字数，只用于展示进度
+  let toolLog = [];     // Agent 模式下这一步调了哪些工具
 
   try {
     const ctrl = new AbortController();
@@ -1075,6 +1100,32 @@ async function send() {
             }
             break;
 
+          // Agent 模式下模型在调工具。中间过程不流式（返回的是 JSON 碎片，
+          // 用户看不懂），只显示一句人话的进度。
+          case "tool_start":
+            bubble.classList.remove("thinking");
+            bubble.innerHTML =
+              `<div class="thinkingbar"><span class="spinner"></span>` +
+              `${escapeHtml(TOOL_LABEL[ev.name] || "处理中")}<span class="dots"></span>` +
+              `<span class="thinkcnt">第 ${ev.n} 次</span></div>`;
+            scrollBottom();
+            break;
+
+          case "tool_done":
+            toolLog.push({ name: ev.name, summary: ev.summary, ok: ev.ok });
+            bubble.innerHTML =
+              `<div class="thinkingbar"><span class="spinner"></span>` +
+              `${escapeHtml(ev.summary || "完成")}<span class="dots"></span></div>`;
+            scrollBottom();
+            break;
+
+          // 模型一边说话一边决定调工具，前面吐的那半句是废话，得清掉
+          case "answer_reset":
+            acc = "";
+            firstDelta = true;
+            bubble.innerHTML = "";
+            break;
+
           case "delta":
             if (firstDelta) {
               bubble.classList.remove("thinking");
@@ -1089,6 +1140,22 @@ async function send() {
           case "done":
             if (ev.citations && ev.citations.length) {
               highlightCited(bubble, ev.citations);
+            }
+            // Agent 模式下把"用了几步、调了几次工具、多久"显示出来。
+            // 这不是炫技：它让用户知道答案是怎么来的，也是验收指标。
+            if (ev.agent) {
+              const a = ev.agent;
+              const meta = aiNode.querySelector(".agentmeta");
+              if (meta) {
+                const names = (a.tools || [])
+                  .map(t => TOOL_LABEL[t] ? TOOL_LABEL[t].replace("正在", "") : t);
+                meta.innerHTML =
+                  `<span class="am-item">${a.steps} 步</span>` +
+                  `<span class="am-item">调工具 ${a.tool_calls} 次</span>` +
+                  (names.length ? `<span class="am-item">${escapeHtml(names.join(" · "))}</span>` : "") +
+                  `<span class="am-item">${a.elapsed_s}s</span>`;
+                meta.hidden = false;
+              }
             }
             break;
 

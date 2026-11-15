@@ -134,6 +134,24 @@ MAX_CONTEXT_CHARS = int(os.getenv("MYCOOKER_MAX_CONTEXT_CHARS", "6000"))
 HISTORY_TURNS = int(os.getenv("MYCOOKER_HISTORY_TURNS", "6"))
 MAX_FACTS = int(os.getenv("MYCOOKER_MAX_FACTS", "30"))
 
+# ---------------------------------------------------------------- Agent
+# 打开后走 Agent 模式：模型自己决定要不要调工具、调几次。
+# 关掉就退回原来的 RAG 模式（固定检索一次），方便对比两种做法的差别。
+AGENT_ENABLED = os.getenv("MYCOOKER_AGENT", "1").strip() not in ("0", "false", "False", "no")
+
+# ⚠️ 这是保险丝，不是性能参数。
+# 模型有可能反复查同一个词、或者揪着报错的工具不放，一路调下去。
+# 没有这个上限，一个问题就可能烧掉一整天额度。
+# 实测正常问题 1~2 轮就够，6 轮已经很宽松。
+AGENT_MAX_STEPS = int(os.getenv("MYCOOKER_AGENT_MAX_STEPS", "6"))
+
+# Agent 每轮的输出上限。推理模型每轮都要思考，所以比普通对话给得多。
+AGENT_MAX_TOKENS = int(os.getenv("MYCOOKER_AGENT_MAX_TOKENS", "4000"))
+
+# 单次回答里工具结果的总字符上限。工具返回太长会撑爆上下文，
+# 而且模型也读不过来（它只需要关键数字，不需要整篇菜谱）。
+AGENT_MAX_TOOL_CHARS = int(os.getenv("MYCOOKER_AGENT_MAX_TOOL_CHARS", "2500"))
+
 # ---------------------------------------------------------------- 服务
 HOST = os.getenv("MYCOOKER_HOST", "127.0.0.1")
 PORT = int(os.getenv("MYCOOKER_PORT", "8001"))
@@ -184,10 +202,12 @@ def providers() -> dict:
 def summary() -> str:
     """一行式描述，打日志用。"""
     p = providers()
+    mode = f"Agent(最多{AGENT_MAX_STEPS}步)" if AGENT_ENABLED else "RAG(固定检索1次)"
     return (
         f"对话={p['chat']['provider']}/{p['chat']['model']} | "
         f"视觉={p['vision']['provider']}/{p['vision']['model']} | "
-        f"向量={p['embedding']['provider']}/{p['embedding']['model']}({EMBEDDING_DIM}维)"
+        f"向量={p['embedding']['provider']}/{p['embedding']['model']}({EMBEDDING_DIM}维) | "
+        f"模式={mode}"
     )
 
 

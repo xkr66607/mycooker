@@ -31,6 +31,7 @@ import config                                    # noqa: E402
 from api.v1 import chat, kb, memory              # noqa: E402
 from memory.store import init_db                 # noqa: E402
 from rag import store as vector_store            # noqa: E402
+from rag import tools                             # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,6 +98,12 @@ async def health():
             "chat": config.CHAT_MODEL,
             "vision": config.VISION_MODEL,
             "embedding": config.EMBEDDING_MODEL,
+        },
+        "agent": {
+            "enabled": config.AGENT_ENABLED,
+            "max_steps": config.AGENT_MAX_STEPS,
+            "tools": sorted(tools.TOOLS and
+                            [t["function"]["name"] for t in tools.TOOLS]),
         },
         "knowledge_base": st,
         "version": app.version,
