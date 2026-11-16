@@ -52,6 +52,19 @@ AGENT_SYSTEM_PROMPT = """你是「小厨·私厨助手」，一个能查资料�
    （JSON、参数、函数名）写进答案里，用户不需要看这些。"""
 
 
+# 闲聊路线用的提示词：没有工具，也就不用讲工具规则。
+# 如果闲聊也套上面那段"必须调工具查"的提示词，模型会因为没有工具可用而无所适从，
+# 或者干脆编造一个查询过程出来。
+CHAT_SYSTEM_PROMPT = """你是「小厨·私厨助手」，一个懂做饭、懂营养的助手。
+
+用户在跟你闲聊，或者说了句客气话。自然地回应就好，不用查资料，也不用讲长度。
+
+如果对方顺口问到了具体的菜或营养问题，简单回应一句，然后邀请他把问题说清楚
+（比如「想做什么菜」「想算哪种食材」），这样你才能帮上忙。
+
+语气轻松、别端着，不要用"作为 AI 助手"这种说法。"""
+
+
 # 用户问的菜名里可能带这些后缀
 _DISH_NOISE = ("怎么做", "的做法", "怎么烧", "怎么炒", "菜谱", "做法", "做法呢", "？", "?")
 
@@ -204,12 +217,21 @@ async def stream_agent(
     conversation_id: str | None = None,
     image_url: str | None = None,
     history: list[dict] | None = None,
+    tools_enabled: bool = True,
 ):
-    """Agent 模式的流式回答。事件类型与 stream_chat 兼容，额外多了工具相关事件。"""
+    """Agent 模式的流式回答。事件类型与 stream_chat 兼容，额外多了工具相关事件。
+
+    tools_enabled=False 时退化成「一次模型调用 + 流式输出」，
+    用在闲聊路线上 —— 不传工具、不检索，最省。
+    这样两条路线共用同一套事件协议和落库逻辑，不用写两份。
+    """
     question = (question or "").strip()
     if not question:
         yield {"type": "error", "message": "问题不能为空"}
         return
+
+    system_prompt = AGENT_SYSTEM_PROMPT if tools_enabled else CHAT_SYSTEM_PROMPT
+    max_steps = config.AGENT_MAX_STEPS if tools_enabled else 1
 
     # 1) 会话与历史
     try:
@@ -243,7 +265,7 @@ async def stream_agent(
         except Exception as exc:
             logger.warning("图片识别失败: %s", exc)
 
-    messages: list[dict] = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": question + extra})
 
@@ -258,8 +280,8 @@ async def stream_agent(
 
     # 3) 主循环
     force_final = False
-    for step in range(config.AGENT_MAX_STEPS + 1):
-        is_last_chance = step >= config.AGENT_MAX_STEPS
+    for step in range(max_steps + 1):
+        is_last_chance = step >= max_steps
         stats["steps"] = step + 1
 
         # 每轮开始先把已收集的资料推给前端（可以重复推，前端是覆盖渲染）
@@ -274,8 +296,8 @@ async def stream_agent(
             stream = await client.chat.completions.create(
                 model=config.CHAT_MODEL,
                 messages=messages,
-                tools=tools.TOOLS if not force_final else None,
-                tool_choice="auto" if not force_final else None,
+                tools=tools.TOOLS if (tools_enabled and not force_final) else None,
+                tool_choice="auto" if (tools_enabled and not force_final) else None,
                 stream=True,
                 max_tokens=config.AGENT_MAX_TOKENS,
             )
@@ -372,9 +394,9 @@ async def stream_agent(
             })
 
         # 步数用完了，下一轮禁用工具，逼它基于已有资料收尾
-        if step + 1 >= config.AGENT_MAX_STEPS:
+        if step + 1 >= max_steps:
             force_final = True
-            logger.warning("Agent 达到步数上限 %s，强制收尾", config.AGENT_MAX_STEPS)
+            logger.warning("达到步数上限 %s，强制收尾", max_steps)
 
     answer = "".join(answer_parts).strip()
 

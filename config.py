@@ -139,6 +139,12 @@ MAX_FACTS = int(os.getenv("MYCOOKER_MAX_FACTS", "30"))
 # 关掉就退回原来的 RAG 模式（固定检索一次），方便对比两种做法的差别。
 AGENT_ENABLED = os.getenv("MYCOOKER_AGENT", "1").strip() not in ("0", "false", "False", "no")
 
+# 问题复杂度路由。
+# 开着：按问题难度自动分派 —— 闲聊直接答、单跳走 RAG、复杂走 Agent。
+# 关掉：所有问题都走 AGENT_ENABLED 指定的那一种，方便跑对比实验。
+# 为什么需要它见 rag/router.py 开头的说明：Agent 在单跳题上比 RAG 慢一倍。
+ROUTER_ENABLED = os.getenv("MYCOOKER_ROUTER", "1").strip() not in ("0", "false", "False", "no")
+
 # ⚠️ 这是保险丝，不是性能参数。
 # 模型有可能反复查同一个词、或者揪着报错的工具不放，一路调下去。
 # 没有这个上限，一个问题就可能烧掉一整天额度。
@@ -151,6 +157,26 @@ AGENT_MAX_TOKENS = int(os.getenv("MYCOOKER_AGENT_MAX_TOKENS", "4000"))
 # 单次回答里工具结果的总字符上限。工具返回太长会撑爆上下文，
 # 而且模型也读不过来（它只需要关键数字，不需要整篇菜谱）。
 AGENT_MAX_TOOL_CHARS = int(os.getenv("MYCOOKER_AGENT_MAX_TOOL_CHARS", "2500"))
+
+# ---------------------------------------------------------------- 网络
+# 是否让请求走系统代理（Windows 注册表里那个）。
+#
+# 为什么默认关：DashScope 是国内服务，本来就不需要代理。
+# requests 库会自动读取 Windows 的代理设置，实测走代理后
+# 向量化中位 4.54s、波动 3.38~6.48s，直连中位 1.07s、波动 1.04~1.12s —— 差 4 倍。
+# 而且代理会偶发 RemoteDisconnected，一次卡 25 秒，用户看到的是白屏。
+#
+# 如果你的网络环境必须走代理才能访问 DashScope，把它设成 1。
+USE_SYSTEM_PROXY = os.getenv("MYCOOKER_USE_PROXY", "0").strip() not in ("0", "false", "False", "no")
+
+# 向量化的超时和重试次数。
+#
+# ⚠️ 这两个数字直接决定用户能白屏多久：
+#     原来 60 秒 × 3 次 = 最坏 180 秒，比"报错"还糟糕 —— 用户不知道发生了什么。
+#     现在 10 秒 × 2 次 = 最坏 20 秒，而且超时会降级成"不检索"继续答。
+# 向量化在用户提问后的第一秒就要跑，它卡住等于整个对话卡住，所以不能等。
+EMBEDDING_TIMEOUT = float(os.getenv("MYCOOKER_EMBEDDING_TIMEOUT", "10"))
+EMBEDDING_RETRIES = int(os.getenv("MYCOOKER_EMBEDDING_RETRIES", "2"))
 
 # ---------------------------------------------------------------- 服务
 HOST = os.getenv("MYCOOKER_HOST", "127.0.0.1")
@@ -202,7 +228,12 @@ def providers() -> dict:
 def summary() -> str:
     """一行式描述，打日志用。"""
     p = providers()
-    mode = f"Agent(最多{AGENT_MAX_STEPS}步)" if AGENT_ENABLED else "RAG(固定检索1次)"
+    if ROUTER_ENABLED:
+        mode = "路由(闲聊/RAG/Agent)"
+    elif AGENT_ENABLED:
+        mode = f"Agent(最多{AGENT_MAX_STEPS}步)"
+    else:
+        mode = "RAG(固定检索1次)"
     return (
         f"对话={p['chat']['provider']}/{p['chat']['model']} | "
         f"视觉={p['vision']['provider']}/{p['vision']['model']} | "

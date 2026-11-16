@@ -19,6 +19,9 @@ from pydantic import BaseModel, Field
 import config
 from memory import store as memory
 from rag import agent, pipeline
+# ⚠️ 这个模块不能起名 router：下面 router = APIRouter() 会把它覆盖掉，
+#    结果就是 AttributeError: 'APIRouter' object has no attribute 'AGENT'。
+from rag import router as question_router
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,8 +31,8 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     conversation_id: str | None = None
     image_url: str | None = None
-    # None = 用服务端配置；true/false = 本次请求强制走 Agent / RAG。
-    # 留着这个开关是为了能拿同一批问题跑两种模式做对比。
+    # None = 走路由（按问题难度自动分派）；true/false = 本次请求强制走 Agent / RAG。
+    # 留着这个开关是为了能拿同一批问题跑不同路线做对比。
     agent: bool | None = None
 
 
@@ -42,24 +45,38 @@ def _sse(event: dict) -> str:
 async def chat_stream(req: ChatRequest):
     """流式对话：返回 SSE 事件流。
 
-    Agent 模式（默认）由模型自己决定调哪些工具、调几次；
-    RAG 模式固定检索一次。两种模式的事件类型兼容，
-    前端不用改。
+    默认走路由：按问题难度自动选 闲聊 / RAG / Agent 三条路之一。
+    请求体里指定 agent=true/false 可以强制走某一条，方便做对比实验。
     """
-    use_agent = config.AGENT_ENABLED if req.agent is None else req.agent
+    q = req.message.strip()
+
+    if req.agent is not None:
+        mode = question_router.AGENT if req.agent else question_router.RAG
+        reason = "请求强制指定"
+    elif config.ROUTER_ENABLED:
+        mode, reason = question_router.route(q)
+    else:
+        mode = question_router.AGENT if config.AGENT_ENABLED else question_router.RAG
+        reason = "路由已关闭"
 
     async def gen():
+        # 第一条就把路线告诉前端：出了问题要能看出是它走错了路
+        yield _sse({"type": "route", "mode": mode, "reason": reason})
         try:
-            if use_agent:
+            if mode == question_router.CHAT:
+                # 闲聊：不检索、不给工具，一次模型调用就完事
                 stream = agent.stream_agent(
-                    question=req.message.strip(),
-                    conversation_id=req.conversation_id,
+                    question=q, conversation_id=req.conversation_id,
+                    image_url=req.image_url, tools_enabled=False,
+                )
+            elif mode == question_router.AGENT:
+                stream = agent.stream_agent(
+                    question=q, conversation_id=req.conversation_id,
                     image_url=req.image_url,
                 )
             else:
                 stream = pipeline.stream_chat(
-                    question=req.message.strip(),
-                    conversation_id=req.conversation_id,
+                    question=q, conversation_id=req.conversation_id,
                     image_url=req.image_url,
                 )
             async for event in stream:

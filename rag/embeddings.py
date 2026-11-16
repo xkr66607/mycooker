@@ -24,10 +24,13 @@ class EmbeddingError(RuntimeError):
     """向量化失败，上层应捕获并降级。"""
 
 
-def _request(texts: list[str], text_type: str, retries: int = 3) -> list[list[float]]:
+def _request(texts: list[str], text_type: str, retries: int | None = None) -> list[list[float]]:
     """调一次 DashScope embedding 接口，失败自动重试（指数退避）。"""
     if not config.EMBEDDING_API_KEY:
         raise EmbeddingError("缺少 EMBEDDING_API_KEY（或 DASHSCOPE_API_KEY），无法向量化")
+
+    if retries is None:
+        retries = config.EMBEDDING_RETRIES
 
     payload = {
         "model": config.EMBEDDING_MODEL,
@@ -39,11 +42,17 @@ def _request(texts: list[str], text_type: str, retries: int = 3) -> list[list[fl
         "Content-Type": "application/json",
     }
 
+    # 默认绕开系统代理：DashScope 是国内服务，走代理实测慢 4 倍而且会偶发断连。
+    # 传空 dict 等于显式声明"这几个协议没有代理"，
+    # 优先级高于 requests 从 Windows 注册表读到的设置。
+    proxies = None if config.USE_SYSTEM_PROXY else {"http": None, "https": None}
+
     last_err = ""
     for attempt in range(1, retries + 1):
         try:
             resp = requests.post(
-                config.EMBEDDING_URL, headers=headers, json=payload, timeout=60
+                config.EMBEDDING_URL, headers=headers, json=payload,
+                timeout=config.EMBEDDING_TIMEOUT, proxies=proxies,
             )
             if resp.status_code == 200:
                 data = resp.json()

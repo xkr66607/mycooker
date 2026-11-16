@@ -1,0 +1,162 @@
+"""
+问题复杂度路由：决定一个问题该走哪条路。
+
+为什么需要它
+------------
+实测（见 demo_singlehop.py、demo_noise.py）显示 Agent 不是全面更好，而是分题型相反：
+
+    闲聊   Agent 2.0s   RAG  6.9s      Agent 赢（省掉 2.8~5s 的向量化）
+    单跳   Agent 11.8s  RAG  5.8s      RAG 赢（Agent 多了 1 轮模型调用）
+    多跳   Agent 精确   RAG  给不出    Agent 赢
+    列举   Agent 对     RAG  答少一半  Agent 赢
+
+所以不该全局开除一种模式，而是按问题难度分派。
+
+三条路线
+--------
+    chat   不检索，直接答         一次模型调用
+    rag    固定检索一次再答       一次向量化 + 一次模型调用
+    agent  工具循环，按需检索     一至多轮模型调用
+
+设计原则：规则优先，不用模型
+--------------------------
+用模型判断「这题难不难」，本身就要一次调用（约 2 秒），
+省下的 6 秒只剩 4 秒。所以这里全部是零成本的字符串规则。
+
+设计原则：错误代价不对称，要偏向安全
+----------------------------------
+    复杂题误判成单跳  →  答不全、答错      ← 最严重
+    单跳题误判成复杂  →  慢几秒，但答对    ← 只是不划算
+    真问题误判成闲聊  →  不检索直接编      ← 最严重
+
+所以默认落点是 agent（最不容易答错），
+只有**能明确证明**是闲聊或单跳时才降级。
+拿不准的时候，选不会答错的那条路。
+"""
+from __future__ import annotations
+
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
+CHAT, RAG, AGENT = "chat", "rag", "agent"
+
+# ---------------------------------------------------------------- 闲聊
+# 只认非常强的信号：极短 + 寒暄词 + 没有任何实义提问成分。
+# 宁可漏判（当单跳处理，慢一点），也不能把真问题当闲聊（会不检索直接编）。
+_GREETING = re.compile(
+    r"(你好|您好|哈喽|hello|hi|嗨|早|早安|早上好|中午好|下午好|晚上好|"
+    r"谢谢|多谢|感谢|辛苦了|好的|好嘞|嗯|嗯嗯|ok|okay|收到|明白了|懂了|"
+    r"再见|拜拜|晚安)",
+    re.IGNORECASE,
+)
+_CHAT_MAX_LEN = 16
+
+# 带这些词的绝不可能是闲聊
+_REAL_QUESTION = re.compile(
+    r"什么|怎么|如何|多少|哪|几|为什么|能不能|可以吗|是不是|有没有|"
+    r"比例|热量|蛋白|脂肪|卡|克|勺|保存|做法|步骤|推荐"
+)
+
+# 只要沾了厨房的边，就不是闲聊。
+# 光靠"开头是寒暄词"不够：「你好，我想学做菜」开头也是你好，
+# 但它是真请求，不能当闲聊直接编答案。
+_COOKING = re.compile(
+    r"菜|肉|蛋|鱼|虾|汤|米|面|饭|油|盐|糖|醋|酱|锅|刀|火|"
+    r"蒸|炒|煮|炖|烤|煎|炸|腌|焯|切|拌|焖|"
+    r"吃|做|买|存|放|洗|营养|热量|蛋白|食材|调料|配料|食谱|冰箱|厨"
+)
+
+
+# ---------------------------------------------------------------- 需要 Agent
+# 每条规则都对应一个实测会翻车的场景，不是凭感觉加的。
+_AGENT_RULES = [
+    # ① 要算数。RAG 只能检索，算不出来；模型心算会错。
+    #    ⚠️ 刻意不含这些词，它们更常见于"查现成数字"而不是"要计算"：
+    #       「蛋白质」「脂肪」→ 「减脂期蛋白质每天要吃多少」是查知识库
+    #       「多少卡」      → 「西兰花多少卡」知识库里直接写着 34 千卡/100g
+    #    已知短板：如果用户把一道菜说成「红烧肉多少卡」（不说"热量"），
+    #    这条会漏判成单跳。RAG 拿不到时会说"没有数据"，不会编 —— 可以接受。
+    ("需要计算",
+     re.compile(r"算|热量|千卡|大卡|卡路里|供能")),
+
+    # ② 要列举。语义检索一定会漏（实测「有哪几道菜」RAG 答 4 道，实际 6 道）。
+    ("需要列举",
+     re.compile(r"哪几道|哪些菜|有什么菜|都有什么|列一下|列举|全部|所有|清单|几种")),
+
+    # ③ 多诉求。一个问题里问了两件以上的事，一次检索凑不齐。
+    ("多诉求",
+     re.compile(r"还有|另外|顺便|同时|再算|一起|分别|以及")),
+
+    # ④ 带具体用量。说明用户要按量算，而不是问泛泛的知识。
+    ("带具体用量",
+     re.compile(r"\d+\s*(克|g|kg|千克|勺|ml|毫升|两|斤|个|片|碗)")),
+
+    # ⑤ 做法请求。菜谱经常要交叉引用（处理要点 + 调味比例 + 做法），
+    #    一次检索容易只拿到其中一块。
+    ("做法请求",
+     re.compile(r"怎么做|做法|步骤|怎么烧|怎么炒|怎么炖|怎么蒸|教我|怎么弄")),
+
+    # ⑥ 要换算。出现人数/份数/倍数，说明得先查原方用量再按比例折算，
+    #    这是两步，单跳做不了。
+    #    ⚠️ 和「多少克」区分：「减脂期蛋白质每天要吃多少克」是查现成数字，不升级；
+    #    「两个人吃，需要多少克五花肉」要拿 750 克按人数折算，必须升级。
+    ("需要换算",
+     re.compile(r"\d+\s*[个位人]\s*人|两[个位人]|几[个位]?人|[一二三四五六]人份|"
+                r"一人份|两人份|一半|减半|翻倍|换算|按.{0,4}比例")),
+]
+
+
+def _is_chitchat(q: str) -> bool:
+    if len(q) > _CHAT_MAX_LEN:
+        return False
+    if _REAL_QUESTION.search(q):
+        return False
+    if _COOKING.search(q):
+        return False
+    return bool(_GREETING.search(q))
+
+
+def _question_marks(q: str) -> int:
+    return q.count("?") + q.count("？")
+
+
+def route(question: str) -> tuple[str, str]:
+    """返回 (路线, 原因)。原因要能解释，不能只给结论 —— 出了问题要能追溯。"""
+    q = (question or "").strip()
+    if not q:
+        return CHAT, "空问题"
+
+    if _is_chitchat(q):
+        return CHAT, "寒暄，不需要检索"
+
+    # 问号数量 >= 2 视为多诉求
+    if _question_marks(q) >= 2:
+        return AGENT, "一句话里有多个问题"
+
+    for reason, pat in _AGENT_RULES:
+        m = pat.search(q)
+        if m:
+            return AGENT, f"{reason}（命中「{m.group(0)}」）"
+
+    return RAG, "单一事实查询，检索一次就够"
+
+
+def explain(question: str) -> dict:
+    """调试用：把每条规则的命中情况都列出来。"""
+    q = (question or "").strip()
+    mode, reason = route(q)
+    hits = []
+    for name, pat in _AGENT_RULES:
+        m = pat.search(q)
+        hits.append({"rule": name, "hit": m.group(0) if m else None})
+    return {
+        "question": q,
+        "route": mode,
+        "reason": reason,
+        "length": len(q),
+        "question_marks": _question_marks(q),
+        "is_chitchat": _is_chitchat(q),
+        "agent_rules": hits,
+    }

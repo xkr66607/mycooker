@@ -1021,6 +1021,8 @@ async function send() {
   let firstDelta = true;
   let thinkChars = 0;   // 推理模型思考字数，只用于展示进度
   let toolLog = [];     // Agent 模式下这一步调了哪些工具
+  let routeInfo = null; // 这条问题被分派到哪条路（闲聊/RAG/Agent）
+  const t0 = Date.now();
 
   try {
     const ctrl = new AbortController();
@@ -1063,6 +1065,11 @@ async function send() {
         switch (ev.type) {
           case "conversation":
             S.convId = ev.id;
+            break;
+
+          // 路由结果。第一个事件就是它，出了问题要能一眼看出走错路了。
+          case "route":
+            routeInfo = ev;
             break;
 
           case "ingredients":
@@ -1143,19 +1150,34 @@ async function send() {
             }
             // Agent 模式下把"用了几步、调了几次工具、多久"显示出来。
             // 这不是炫技：它让用户知道答案是怎么来的，也是验收指标。
-            if (ev.agent) {
-              const a = ev.agent;
-              const meta = aiNode.querySelector(".agentmeta");
-              if (meta) {
-                const names = (a.tools || [])
-                  .map(t => TOOL_LABEL[t] ? TOOL_LABEL[t].replace("正在", "") : t);
-                meta.innerHTML =
-                  `<span class="am-item">${a.steps} 步</span>` +
-                  `<span class="am-item">调工具 ${a.tool_calls} 次</span>` +
-                  (names.length ? `<span class="am-item">${escapeHtml(names.join(" · "))}</span>` : "") +
-                  `<span class="am-item">${a.elapsed_s}s</span>`;
-                meta.hidden = false;
+            const meta = aiNode.querySelector(".agentmeta");
+            if (meta) {
+              const parts = [];
+              const mode = routeInfo && routeInfo.mode;
+              const ROUTE_LABEL = {
+                chat:  "闲聊 · 未检索",
+                rag:   "RAG · 检索 1 次",
+                agent: "Agent",
+              };
+              if (ROUTE_LABEL[mode]) parts.push(ROUTE_LABEL[mode]);
+
+              if (ev.agent) {
+                const a = ev.agent;
+                parts.push(`${a.steps} 步`);
+                if (a.tool_calls) parts.push(`调工具 ${a.tool_calls} 次`);
+                const names = (a.tools || []).map(t =>
+                  TOOL_LABEL[t] ? TOOL_LABEL[t].replace("正在", "") : t);
+                if (names.length) parts.push(names.join(" · "));
               }
+              parts.push(`${((Date.now() - t0) / 1000).toFixed(1)}s`);
+
+              if (routeInfo && routeInfo.reason) {
+                meta.title = "路由原因：" + routeInfo.reason;
+              }
+              meta.innerHTML = parts
+                .map(p => `<span class="am-item">${escapeHtml(p)}</span>`)
+                .join("");
+              meta.hidden = false;
             }
             break;
 
