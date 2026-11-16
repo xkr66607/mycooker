@@ -51,6 +51,28 @@ venv\Scripts\pip install -r requirements.txt
 
 然后在 `.env` 里填好 Key（照 `.env.example` 抄一份改名即可）。
 
+### 跑验收脚本时，别把服务一直挂着
+
+开发时踩过：起了服务忘了关，端口被占一个多小时，
+用户看到 8002 被占用，只能自己去翻进程杀。
+
+现在用 `_with_server.py`，**起服务、跑脚本、关服务在一条命令里完成**：
+
+```bash
+python _with_server.py demo_escalate.py
+python _with_server.py demo_router.py demo_singlehop.py   # 可以连着跑多个
+```
+
+跑完、报错、Ctrl+C、测试失败，任何一条路都会走 `finally` 把服务关掉，
+并确认端口真的释放了。**不会留下悬挂进程。**
+
+如果端口已经被别人占着，它会直接报错退出，**不会去动别人的进程** ——
+要先自己确认是谁：
+
+```powershell
+Get-NetTCPConnection -LocalPort 8002 -State Listen | Select-Object OwningProcess
+```
+
 ---
 
 ## 一·五、怎么换模型
@@ -468,8 +490,9 @@ mycooker/
 ├── static/index.html       # 前端（单文件，零构建，零外部依赖）
 ├── seeds/                  # 三篇示例知识库，可直接上传体验
 │
-├── test_router.py          # 路由单元测试（17 条，纯逻辑不联网，随时可跑）
+├── test_router.py          # 路由单元测试（24 条，纯逻辑不联网，随时可跑）
 ├── probe_network.py        # 探针：网络健不健康，决定跑不跑长实验
+├── _with_server.py         # 起服务→跑脚本→关服务，一条命令搞定，不留悬挂端口
 ├── _demo_util.py           # demo 公共收尾：跑完自动删掉本轮产生的测试会话
 ├── demo_noise.py           # 实验：单次测量有多不可靠（同题跑 5 次看分布）
 ├── demo_singlehop.py       # 实验：单跳题 RAG vs Agent 的网络往返差
