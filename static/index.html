@@ -1163,7 +1163,8 @@ async function send() {
 
               if (ev.agent) {
                 const a = ev.agent;
-                parts.push(`${a.steps} 步`);
+                // 闲聊只调一次模型，没有"步数"可言，显示了反而是噪音
+                if (mode !== "chat") parts.push(`${a.steps} 步`);
                 if (a.tool_calls) parts.push(`调工具 ${a.tool_calls} 次`);
                 const names = (a.tools || []).map(t =>
                   TOOL_LABEL[t] ? TOOL_LABEL[t].replace("正在", "") : t);
