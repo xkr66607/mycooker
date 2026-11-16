@@ -12,6 +12,8 @@ import statistics
 import time
 import urllib.request
 
+from _demo_util import Cleanup, note
+
 URL = "http://127.0.0.1:8002/api/v1/chat/stream"
 N = 5
 QUESTION = "你好呀，今天心情不错"
@@ -32,6 +34,7 @@ def run(use_agent: bool) -> dict:
             if not p or p == "[DONE]":
                 continue
             ev = json.loads(p)
+            note(ev)                      # 记下新建的会话，结束时统一删掉
             if ev["type"] == "delta":
                 ans += ev.get("text", "")
             elif ev["type"] == "answer_reset":
@@ -103,4 +106,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with Cleanup():      # 跑完自动删掉本轮新建的测试会话
+        main()

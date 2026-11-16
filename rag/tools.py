@@ -401,6 +401,35 @@ def _exec_list_dishes() -> dict:
     }
 
 
+def inventory() -> dict:
+    """知识库里到底有什么。给「检索一条都没命中」的场景用。
+
+    为什么需要：用户问了一个库里没有的东西，只回一句"没有"对他没用 ——
+    他还得再猜一次该问什么。告诉他收录了哪几道菜、哪几份资料，
+    他自己就能换个问法。
+
+    这是查本地 Chroma，不走网络，所以随时调用都不花钱。
+    """
+    try:
+        chunks = _all_chunks()
+    except Exception as exc:          # 库没就绪之类，不能因为这个把对话搞崩
+        logger.warning("读取知识库清单失败: %s", exc)
+        return {"ok": False, "dishes": [], "files": [], "chunks": 0}
+
+    dishes: list[str] = []
+    files: list[str] = []
+    for c in chunks:
+        fn = c.get("filename", "")
+        if fn and fn not in files:
+            files.append(fn)
+        if fn.startswith(DISH_FILE):
+            label = _strip_ordinal(c.get("label", ""))
+            if label and label not in dishes:
+                dishes.append(label)
+
+    return {"ok": True, "dishes": dishes, "files": files, "chunks": len(chunks)}
+
+
 def _exec_calc_nutrition(items: list) -> dict:
     if not items:
         return {"ok": False, "error": "items 不能为空"}

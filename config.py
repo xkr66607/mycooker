@@ -145,6 +145,25 @@ AGENT_ENABLED = os.getenv("MYCOOKER_AGENT", "1").strip() not in ("0", "false", "
 # 为什么需要它见 rag/router.py 开头的说明：Agent 在单跳题上比 RAG 慢一倍。
 ROUTER_ENABLED = os.getenv("MYCOOKER_ROUTER", "1").strip() not in ("0", "false", "False", "no")
 
+# 路由判成单跳（走 RAG）、但检索一条都没命中时，是否自动升级到 Agent 再找一次。
+#
+# ⚠️ 默认关闭。这是实测之后的决定，不是没做完。
+#
+# 原本的想法：路由是规则判断，会漏判。「糖醋排骨怎么做」如果被判成单跳，
+# RAG 检索不到就回一句「知识库里没有」，不会再去试别的工具 —— 像是死路。
+#
+# 实测结果（demo_escalate.py）：升级之后 Agent 也查不到，因为它面对的是
+# 同一个知识库。对「量子力学的波函数坍缩是什么」这种问题，
+# 模型直接判断「这不是厨房问题」就答了，连工具都没调。
+# 而这件事 RAG 一样能做，还少一次模型调用。
+#
+# 真正有用的做法是把「知识库里到底有什么」告诉用户，让他自己换问法 ——
+# 那件事做在 pipeline._inventory_context() 里，查本地库，不花网络往返。
+#
+# 留着这个开关是为了：换一批文档、或换更大的知识库之后，
+# 值得再跑一次 demo_escalate.py 看看结论还成不成立。
+RAG_ESCALATE = os.getenv("MYCOOKER_RAG_ESCALATE", "0").strip() not in ("0", "false", "False", "no")
+
 # ⚠️ 这是保险丝，不是性能参数。
 # 模型有可能反复查同一个词、或者揪着报错的工具不放，一路调下去。
 # 没有这个上限，一个问题就可能烧掉一整天额度。

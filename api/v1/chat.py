@@ -69,18 +69,65 @@ async def chat_stream(req: ChatRequest):
                     question=q, conversation_id=req.conversation_id,
                     image_url=req.image_url, tools_enabled=False,
                 )
+                async for event in stream:
+                    yield _sse(event)
+
             elif mode == question_router.AGENT:
                 stream = agent.stream_agent(
                     question=q, conversation_id=req.conversation_id,
                     image_url=req.image_url,
                 )
+                async for event in stream:
+                    yield _sse(event)
+
             else:
+                # RAG：允许它在"检索 0 命中"时升级到 Agent。
+                #
+                # 三个条件缺一不可：
+                #   req.agent is None  —— 请求里明确指定 agent=false 时不能升级，
+                #                         否则"对比 RAG 真实表现"的实验就被悄悄改坏了
+                #   ROUTER_ENABLED     —— 路由关掉时保持老行为
+                #   RAG_ESCALATE       —— 单独的总开关
+                #
+                # ⚠️ RAG_ESCALATE 默认是 0。实测（demo_escalate.py）发现
+                #    "0 命中"时升级到 Agent 没有价值：Agent 拿同一个知识库
+                #    同样查不到，它只会说"这不是厨房问题"。真正有用的做法是
+                #    告诉用户知识库里有什么 —— 那件事在 pipeline 里做了，不花往返。
+                allow_escalate = (
+                    req.agent is None and config.ROUTER_ENABLED and config.RAG_ESCALATE
+                )
+                escalated_cid = None
                 stream = pipeline.stream_chat(
                     question=q, conversation_id=req.conversation_id,
                     image_url=req.image_url,
+                    allow_escalate=allow_escalate,
                 )
-            async for event in stream:
-                yield _sse(event)
+                async for event in stream:
+                    if event.get("type") == "escalate":
+                        escalated_cid = event.get("conversation_id")
+                        # 让前端知道为什么换路了，不然用户会觉得答案莫名其妙。
+                        # 用 note 而不是 thinking：thinking 会计入"思考 N 字"，
+                        # 但这句是我们的系统提示，不是模型的思考内容。
+                        yield _sse({
+                            "type": "note",
+                            "text": "知识库没检索到相关内容，换个方式再找一次…",
+                        })
+                        continue
+                    yield _sse(event)
+
+                if escalated_cid:
+                    # 复用同一个会话 id —— 否则用户会看到两条独立的对话记录
+                    yield _sse({
+                        "type": "route",
+                        "mode": question_router.AGENT,
+                        "reason": "RAG 检索 0 命中，自动升级",
+                    })
+                    inner = agent.stream_agent(
+                        question=q, conversation_id=escalated_cid,
+                        image_url=req.image_url,
+                    )
+                    async for event in inner:
+                        yield _sse(event)
         except Exception as exc:  # 兜底：任何未捕获异常都转成一条 error 事件
             logger.exception("对话流异常")
             yield _sse({"type": "error", "message": str(exc)})

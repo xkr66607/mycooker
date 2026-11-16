@@ -1099,6 +1099,16 @@ async function send() {
             }
             break;
 
+          // 系统状态提示（不是模型的思考内容，不计字数）。
+          // 目前只有一种：RAG 没查到东西、自动换 Agent 再找一次。
+          case "note":
+            bubble.classList.remove("thinking");
+            bubble.innerHTML =
+              `<div class="thinkingbar"><span class="spinner"></span>` +
+              `${escapeHtml(ev.text || "")}<span class="dots"></span></div>`;
+            scrollBottom();
+            break;
+
           case "answer_start":
             if (firstDelta) {
               bubble.classList.remove("thinking");

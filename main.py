@@ -105,6 +105,11 @@ async def health():
             "tools": sorted(tools.TOOLS and
                             [t["function"]["name"] for t in tools.TOOLS]),
         },
+        # 路由相关：验收脚本要读这两个来判断当前跑的是哪套行为
+        "router": {
+            "enabled": config.ROUTER_ENABLED,
+        },
+        "rag_escalate": config.RAG_ESCALATE,
         "knowledge_base": st,
         "version": app.version,
     }

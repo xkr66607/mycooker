@@ -179,6 +179,33 @@ def build_context(hits: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
+def _inventory_context() -> str:
+    """检索空手而归时，塞给模型一份「知识库里到底有什么」的清单。
+
+    为什么这么做：只告诉用户"知识库里没有"对他一点用都没有 ——
+    他还得再猜一次该问什么。把收录的菜和资料列出来，他自己就能换个问法。
+
+    成本：查本地 Chroma，不走网络，不花一次往返。
+    """
+    from rag import tools          # 放这里 import，避免模块级循环依赖
+
+    info = tools.inventory()
+    if not info.get("ok"):
+        return ""
+
+    dishes = "、".join(info.get("dishes") or []) or "（暂无）"
+    files = "\n".join(f"  - {f}" for f in (info.get("files") or [])) or "  （暂无）"
+    return (
+        "【本次检索没有命中任何片段】\n"
+        f"知识库目前收录的菜谱（{len(info.get('dishes') or [])} 道）：{dishes}\n"
+        f"知识库的文件：\n{files}\n"
+        f"总计 {info.get('chunks', 0)} 个片段。\n"
+        "回答时：如实说明没有查到相关内容，然后把上面这份清单告诉用户，"
+        "请他确认是不是想问其中的某一道，或者换个更具体的说法。"
+        "不要编造不在清单里的菜谱或数值。"
+    )
+
+
 def _messages(question: str, history: list[dict], facts: str, context: str) -> list[dict]:
     """组装最终送进模型的 messages。顺序很重要：系统 → 事实 → 上下文 → 历史 → 当前问题。"""
     system = SYSTEM_PROMPT
@@ -211,6 +238,7 @@ async def stream_chat(
     question: str,
     conversation_id: str | None,
     image_url: str | None = None,
+    allow_escalate: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """
     产出事件流（由 API 层转成 SSE）：
@@ -220,6 +248,12 @@ async def stream_chat(
       {"type": "delta", "text": "..."}
       {"type": "done", "citations": [...]}
       {"type": "error", "message": "..."}
+      {"type": "escalate", "conversation_id": ..., "reason": ...}   # 仅 allow_escalate=True
+
+    allow_escalate=True 时：检索一条都没命中就不生成答案，
+    改发一条 escalate 事件让上层换 Agent 再试。
+    （为什么要在这里判断：此时已经确定空手而归，
+      再让模型生成"我没有资料"是白花一次调用，而且用户会先看到这句话再被抹掉。）
     """
     # 1) 会话
     cid = memory.ensure_conversation(conversation_id, question)
@@ -241,6 +275,17 @@ async def stream_chat(
         query = f"{query} {ingredients}".strip()
     hits = await retrieve(query)
 
+    # 空手而归：如果上层允许升级，就别浪费这一次模型调用了。
+    # 注意此时还没写任何消息进库，Agent 接手后仍是一条完整对话。
+    if not hits and allow_escalate:
+        logger.info("RAG 检索 0 命中，升级到 Agent | %s", question[:40])
+        yield {
+            "type": "escalate",
+            "conversation_id": cid,
+            "reason": "知识库没有检索到相关内容",
+        }
+        return
+
     # 只把真正会展示的字段发给前端
     sources = [
         {
@@ -256,7 +301,12 @@ async def stream_chat(
 
     # 5) 组装并生成
     facts = memory.facts_as_prompt()
-    context = build_context(hits)
+    if hits:
+        context = build_context(hits)
+    else:
+        # 空手而归时，与其让模型干巴巴说一句"没有"，
+        # 不如把知识库清单给它，让它告诉用户到底能问什么。
+        context = _inventory_context()
     messages = _messages(question, history, facts, context)
 
     answer_parts: list[str] = []

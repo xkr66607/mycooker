@@ -11,6 +11,8 @@ import json
 import time
 import urllib.request
 
+from _demo_util import Cleanup, note
+
 BASE = "http://127.0.0.1:8002/api/v1/chat/stream"
 
 QUESTIONS = [
@@ -45,6 +47,7 @@ def run(question, use_agent: bool) -> dict:
             if not payload or payload == "[DONE]":
                 continue
             ev = json.loads(payload)
+            note(ev)                  # 记下新建的会话，结束时统一删掉
             t = ev["type"]
             if t not in types:
                 types.append(t)
@@ -159,4 +162,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with Cleanup():      # 跑完自动删掉本轮新建的测试会话
+        main()
